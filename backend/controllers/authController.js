@@ -1,22 +1,26 @@
+// backend/controllers/authController.js
 import jwt from "jsonwebtoken";
-import User from "../models/User";
+import User from "../models/User.js";
 
-// generate JWT token
-
+// Generate JWT token
 const generateToken = (userId) => {
-  jwt.sign({ userId }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_IN || "7d",
-  });
+  return jwt.sign(
+    // ← Added 'return'
+    { userId },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
+  );
 };
 
-// @desc Register user
-// @route POST /api/auth/register
+// @desc    Register user
+// @route   POST /api/auth/register
 export const register = async (req, res) => {
   try {
     const { username, email, password } = req.body;
 
     // Check if user already exists
-    const existingUser = User.findOne({
+    const existingUser = await User.findOne({
+      // ← Added 'await'
       $or: [{ email }, { username }],
     });
 
@@ -26,6 +30,7 @@ export const register = async (req, res) => {
         message: "User with this email or username already exists",
       });
     }
+
     const newUser = new User({
       username,
       email,
@@ -37,45 +42,49 @@ export const register = async (req, res) => {
     // Generate token
     const token = generateToken(user._id);
 
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-    });
+    // Cookie approach (commented out)
+    // res.cookie('token', token, {
+    //   httpOnly: true,
+    //   secure: process.env.NODE_ENV === 'production',
+    //   sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    //   maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    // });
 
+    // Bearer token approach
     res.status(201).json({
       success: true,
       message: "User registered successfully",
       data: {
         user,
+        token, // ← Send token in response
       },
     });
   } catch (error) {
-    console.log("Resgister error:", error);
+    console.error("Register error:", error);
     res.status(500).json({
       success: false,
-      message: "Internal Server Error",
+      message: "Internal server error",
     });
   }
 };
 
-// @desc login user
+// @desc    Login user
+// @route   POST /api/auth/login
 export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
     // Find user by email
-    const user = User.findOne({ email });
+    const user = await User.findOne({ email }); // ← Added 'await'
 
     if (!user) {
       return res.status(401).json({
-        success: true,
+        success: false, // ← Fixed: was 'true'
         message: "Invalid credentials",
       });
     }
 
-    // check password using schema method
+    // Check password using schema method
     const isPasswordValid = await user.comparePassword(password);
 
     if (!isPasswordValid) {
@@ -85,26 +94,28 @@ export const login = async (req, res) => {
       });
     }
 
-    // Generate token and set HTTP-only cookie
-
+    // Generate token
     const token = generateToken(user._id);
 
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    // Cookie approach (commented out)
+    // res.cookie('token', token, {
+    //   httpOnly: true,
+    //   secure: process.env.NODE_ENV === 'production',
+    //   sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    //   maxAge: 7 * 24 * 60 * 60 * 1000
+    // });
 
+    // Bearer token approach
     res.status(200).json({
       success: true,
-      message: "Login successfull",
+      message: "Login successful",
       data: {
         user,
+        token, // ← Send token in response
       },
     });
   } catch (error) {
-    console.log("Login error:", error);
+    console.error("Login error:", error);
     res.status(500).json({
       success: false,
       message: "Internal server error",
@@ -112,20 +123,20 @@ export const login = async (req, res) => {
   }
 };
 
-// @desc Get current user
-// @route GET /api/auth/me
-
+// @desc    Get current user
+// @route   GET /api/auth/me
+// @access  Private
 export const getMe = async (req, res) => {
   try {
-    return res.status(200).json({
+    res.status(200).json({
       success: true,
       data: {
         user: req.user,
       },
     });
   } catch (error) {
-    console.log("Get me error:", error);
-    return res.status(500).json({
+    console.error("Get me error:", error);
+    res.status(500).json({
       success: false,
       message: "Internal server error",
     });

@@ -21,7 +21,7 @@ const io = setupSocket(server);
 app.use(
   cors({
     origin: process.env.FRONT_END_URL || "http://localhost:5173",
-    credentials: true, // Allows cookies cross - site
+    // credentials: true, // Allows cookies cross - site
   })
 );
 app.use(expresss.json());
