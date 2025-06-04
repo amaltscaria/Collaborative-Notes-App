@@ -1,22 +1,42 @@
-import express from "express";
-import { getMe, login, register } from "../controllers/authController";
-import auth from "../middleware/auth";
+// backend/routes/notes.js
+import express from 'express';
+import { 
+  getNotes, 
+  getNote, 
+  createNote, 
+  updateNote, 
+  deleteNote 
+} from '../controllers/notesController.js';
+import auth from '../middleware/auth.js';
+
 const router = express.Router();
 
-// @route   POST /api/auth/register
-// @desc    Register a new user
-// @access  Public
-router.post("/register", register);
+// All routes require authentication
+router.use(auth);
 
-// @route   POST /api/auth/login
-// @desc    Login
-// @access  Public
-router.post("/login", login);
-
-// @route   GET /api/auth/me
-// @desc    Get current user profile
+// @route   GET /api/notes
+// @desc    Get all notes for user
 // @access  Private
-router.get("/me", auth, getMe);
+router.get('/', getNotes);
 
+// @route   GET /api/notes/:id
+// @desc    Get single note
+// @access  Private
+router.get('/:id', getNote);
+
+// @route   POST /api/notes
+// @desc    Create new note
+// @access  Private
+router.post('/', createNote);
+
+// @route   PUT /api/notes/:id
+// @desc    Update note
+// @access  Private
+router.put('/:id', updateNote);
+
+// @route   DELETE /api/notes/:id
+// @desc    Delete note
+// @access  Private
+router.delete('/:id', deleteNote);
 
 export default router;

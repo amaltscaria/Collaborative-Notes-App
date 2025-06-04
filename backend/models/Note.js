@@ -46,6 +46,10 @@ const noteSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Indexes for better query performance
+noteSchema.index({ owner: 1 });
+noteSchema.index({ "collaborators.user": 1 });
+
 // method to check if user has acess to note
 
 noteSchema.methods.hasAccess = function (userId, permission = "read") {

@@ -7,6 +7,7 @@ import { Server } from "socket.io";
 import connectDB from "./config/database.js";
 import setupSocket from "./config/socket.js";
 import authRoutes from "./routes/authRoutes.js";
+import noteRoutes from './routes/noteRoutes.js'
 
 // Load environment variables
 dotenv.config();
@@ -28,6 +29,7 @@ app.use(expresss.json());
 // Routes
 
 app.use("/api/auth", authRoutes);
+app.use('/api/notes', noteRoutes)
 
 // Test Route
 app.get("/api/health", (req, res) => {
