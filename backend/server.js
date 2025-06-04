@@ -6,6 +6,7 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import connectDB from "./config/database.js";
 import setupSocket from "./config/socket.js";
+import authRoutes from "./routes/authRoutes.js";
 
 // Load environment variables
 dotenv.config();
@@ -24,6 +25,10 @@ app.use(
 );
 app.use(expresss.json());
 
+// Routes
+
+app.use("/api/auth", authRoutes);
+
 // Test Route
 app.get("/api/health", (req, res) => {
   res.json({
@@ -32,6 +37,8 @@ app.get("/api/health", (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+
 
 const startServer = async () => {
   try {
