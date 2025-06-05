@@ -1,6 +1,6 @@
 import jwt from "jsonwebtoken";
-import User from "../models/User";
-export default auth = async (req, res, next) => {
+import User from "../models/User.js";
+ const  auth = async (req, res, next) => {
   try {
     let token;
 
@@ -46,3 +46,5 @@ export default auth = async (req, res, next) => {
     });
   }
 };
+
+export default auth;

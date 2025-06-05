@@ -1,5 +1,5 @@
-import User from "../models/User";
-import Note from "../models/Note";
+import User from "../models/User.js";
+import Note from "../models/Note.js";
 
 // @desc    Get all notes for user
 // @route   GET /api/notes

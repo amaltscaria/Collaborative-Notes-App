@@ -1,37 +1,29 @@
-import expresss from "express";
+import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
 import dotenv from "dotenv";
 import { createServer } from "http";
-import { Server } from "socket.io";
 import connectDB from "./config/database.js";
-import setupSocket from "./config/socket.js";
+import { initializeSocket } from "./config/socket.js";
 import authRoutes from "./routes/authRoutes.js";
-import noteRoutes from './routes/noteRoutes.js'
+import noteRoutes from "./routes/noteRoutes.js";
 
-// Load environment variables
 dotenv.config();
 
-const app = expresss();
+const app = express();
 const server = createServer(app);
-const io = setupSocket(server);
-
-// Middleware
 
 app.use(
   cors({
     origin: process.env.FRONT_END_URL || "http://localhost:5173",
-    // credentials: true, // Allows cookies cross - site
   })
 );
-app.use(expresss.json());
+app.use(express.json());
 
 // Routes
-
 app.use("/api/auth", authRoutes);
-app.use('/api/notes', noteRoutes)
+app.use("/api/notes", noteRoutes);
 
-// Test Route
 app.get("/api/health", (req, res) => {
   res.json({
     success: true,
@@ -40,19 +32,18 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-
-
 const startServer = async () => {
   try {
-    // connect to DB right
     await connectDB();
 
-    // Setup socket after db connection
-    setupSocket(server);
+    // Initialize Socket.IO ONCE here
+    initializeSocket(server);
 
     const PORT = process.env.PORT || 3001;
-    app.listen(PORT, () => {
+    server.listen(PORT, () => {
+      // ← Use server.listen() not app.listen()
       console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`🔗 Socket.IO ready`);
     });
   } catch (error) {
     console.log("❌ Failed to start server:", error);
@@ -61,6 +52,8 @@ const startServer = async () => {
 };
 
 startServer();
+
+// Graceful shutdown remains the same...
 
 // Single cleanup for both server and database
 process.on("SIGTERM", async () => {
