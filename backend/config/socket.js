@@ -8,15 +8,34 @@ export const initializeSocket = (server) => {
     cors: {
       origin: process.env.CLIENT_URL || "http://localhost:5173",
       methods: ["GET", "POST"],
-      //   credentials: true,
     },
+    pingTimeout: 60000,
+    pingInterval: 25000,
   });
 
-  // Store connected users
+  // Store connected users and rate limiting
   const connectedUsers = new Map();
+  const connectionAttempts = new Map();
+  const userRooms = new Map(); // Track which rooms each user is in
 
   io.on("connection", (socket) => {
-    console.log(`🔗 User connected: ${socket.id}`);
+    const clientIP = socket.handshake.address;
+    
+    // ✅ ADD: Rate limiting to prevent spam connections
+    const now = Date.now();
+    const attempts = connectionAttempts.get(clientIP) || [];
+    const recentAttempts = attempts.filter(time => now - time < 60000); // 1 minute window
+    
+    if (recentAttempts.length > 10) { // Max 10 connections per minute per IP
+      console.log(`🚫 Rate limit exceeded for ${clientIP}`);
+      socket.disconnect(true);
+      return;
+    }
+    
+    recentAttempts.push(now);
+    connectionAttempts.set(clientIP, recentAttempts);
+
+    console.log(`🔗 User connected: ${socket.id} (${recentAttempts.length}/10)`);
 
     // Handle user authentication with JWT verification
     socket.on("authenticate", async (data) => {
@@ -39,15 +58,28 @@ export const initializeSocket = (server) => {
           return;
         }
 
+        // ✅ PREVENT: Multiple authentications for same user
+        if (socket.userId) {
+          console.log(`⚠️ User ${socket.userId} already authenticated`);
+          return;
+        }
+
         // Store authenticated user info
         socket.userId = user._id.toString();
         socket.username = user.username;
         socket.join(`user_${socket.userId}`);
+        
+        // ✅ PREVENT: Duplicate user connections
+        const existingSocketId = connectedUsers.get(socket.userId);
+        if (existingSocketId && io.sockets.sockets.get(existingSocketId)) {
+          console.log(`⚠️ Disconnecting duplicate connection for user ${socket.username}`);
+          io.sockets.sockets.get(existingSocketId).disconnect(true);
+        }
+        
         connectedUsers.set(socket.userId, socket.id);
+        userRooms.set(socket.userId, new Set());
 
-        console.log(
-          `✅ User authenticated: ${user.username} (${socket.userId})`
-        );
+        console.log(`✅ User authenticated: ${user.username} (${socket.userId})`);
         socket.emit("authenticated", {
           success: true,
           user: {
@@ -75,6 +107,13 @@ export const initializeSocket = (server) => {
       }
 
       try {
+        // ✅ PREVENT: Joining same room multiple times
+        const currentRooms = userRooms.get(socket.userId) || new Set();
+        if (currentRooms.has(noteId)) {
+          console.log(`⚠️ User ${socket.username} already in note: ${noteId}`);
+          return;
+        }
+
         // Verify user has access to this note
         const Note = (await import("../models/Note.js")).default;
         const note = await Note.findById(noteId);
@@ -90,6 +129,9 @@ export const initializeSocket = (server) => {
         }
 
         socket.join(`note_${noteId}`);
+        currentRooms.add(noteId);
+        userRooms.set(socket.userId, currentRooms);
+        
         console.log(`📝 User ${socket.username} joined note: ${noteId}`);
 
         // Notify others that someone joined
@@ -108,7 +150,16 @@ export const initializeSocket = (server) => {
     socket.on("leaveNote", (noteId) => {
       if (!socket.userId) return;
 
+      const currentRooms = userRooms.get(socket.userId) || new Set();
+      if (!currentRooms.has(noteId)) {
+        console.log(`⚠️ User ${socket.username} not in note: ${noteId}`);
+        return;
+      }
+
       socket.leave(`note_${noteId}`);
+      currentRooms.delete(noteId);
+      userRooms.set(socket.userId, currentRooms);
+      
       console.log(`📝 User ${socket.username} left note: ${noteId}`);
 
       // Notify others that someone left
@@ -128,6 +179,13 @@ export const initializeSocket = (server) => {
 
       const { noteId, content, title } = data;
 
+      // ✅ VERIFY: User is actually in the note room
+      const currentRooms = userRooms.get(socket.userId) || new Set();
+      if (!currentRooms.has(noteId)) {
+        socket.emit("error", { message: "Not in note room" });
+        return;
+      }
+
       // Broadcast to all users in the note room except sender
       socket.to(`note_${noteId}`).emit("noteContentUpdated", {
         noteId,
@@ -145,6 +203,10 @@ export const initializeSocket = (server) => {
 
       const { noteId, isTyping } = data;
 
+      // ✅ VERIFY: User is in the note room
+      const currentRooms = userRooms.get(socket.userId) || new Set();
+      if (!currentRooms.has(noteId)) return;
+
       socket.to(`note_${noteId}`).emit("userTyping", {
         userId: socket.userId,
         username: socket.username,
@@ -155,16 +217,49 @@ export const initializeSocket = (server) => {
     });
 
     // Handle disconnection
-    socket.on("disconnect", () => {
-      console.log(`🔌 User disconnected: ${socket.id}`);
+    socket.on("disconnect", (reason) => {
+      console.log(`🔌 User disconnected: ${socket.id} (${reason})`);
 
       if (socket.userId) {
+        // Clean up user data
         connectedUsers.delete(socket.userId);
+        userRooms.delete(socket.userId);
+        
+        // Leave all rooms this user was in
+        const rooms = Array.from(socket.rooms);
+        rooms.forEach(room => {
+          if (room.startsWith('note_')) {
+            const noteId = room.replace('note_', '');
+            socket.to(room).emit("userLeft", {
+              userId: socket.userId,
+              username: socket.username,
+              noteId,
+            });
+          }
+        });
       }
+    });
+
+    // ✅ ADD: Handle connection errors
+    socket.on("error", (error) => {
+      console.error(`Socket error for ${socket.id}:`, error);
     });
   });
 
-  console.log("🚀 Socket.IO initialized with JWT authentication");
+  // ✅ ADD: Clean up old connection attempts every 5 minutes
+  setInterval(() => {
+    const now = Date.now();
+    for (const [ip, attempts] of connectionAttempts.entries()) {
+      const recentAttempts = attempts.filter(time => now - time < 300000); // 5 minutes
+      if (recentAttempts.length === 0) {
+        connectionAttempts.delete(ip);
+      } else {
+        connectionAttempts.set(ip, recentAttempts);
+      }
+    }
+  }, 300000); // 5 minutes
+
+  console.log("🚀 Socket.IO initialized with JWT authentication and rate limiting");
 
   return io;
 };

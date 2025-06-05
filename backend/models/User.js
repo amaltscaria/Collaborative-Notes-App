@@ -1,4 +1,6 @@
 import mongoose from "mongoose";
+import bcrypt from 'bcryptjs';
+
 const userSchema = new mongoose.Schema(
   {
     // name: {
@@ -7,7 +9,7 @@ const userSchema = new mongoose.Schema(
     //   trim: true,
     //   maxlength: [50, "Name cannot exceed 50 characters"],
     // },
-    userName: {
+    username: {
       type: String,
       required: [true, "Username is required"],
       unique: true,
@@ -37,9 +39,10 @@ const userSchema = new mongoose.Schema(
 
 // Hash password before saving
 
-userSchema.pre("save", async (next) => {
+userSchema.pre("save", async function(next) {
   // Only hash if password is modified
   try {
+    if (!this.isModified('password')) return next();
     const salt = await bcrypt.genSalt(12);
     this.password = await bcrypt.hash(this.password, salt);
     next();

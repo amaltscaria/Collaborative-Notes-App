@@ -12,6 +12,14 @@ const Dashboard: React.FC = () => {
     navigate('/login');
   };
 
+  const handleCreateNote = () => {
+    navigate('/notes');
+  };
+
+  const handleBrowseNotes = () => {
+    navigate('/notes');
+  };
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -70,10 +78,16 @@ const Dashboard: React.FC = () => {
               </div>
 
               <div className="mt-8">
-                <button className="btn-primary mr-4">
+                <button 
+                  onClick={handleCreateNote}
+                  className="btn-primary mr-4"
+                >
                   Create New Note
                 </button>
-                <button className="btn-secondary">
+                <button 
+                  onClick={handleBrowseNotes}
+                  className="btn-secondary"
+                >
                   Browse Notes
                 </button>
               </div>

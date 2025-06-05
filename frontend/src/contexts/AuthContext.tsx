@@ -94,6 +94,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
       // Update state
       setToken(userToken);
+      console.log(userToken)
       setUser(userData);
     } catch (error: any) {
       throw new Error(error.response?.data?.message || "Registration failed");

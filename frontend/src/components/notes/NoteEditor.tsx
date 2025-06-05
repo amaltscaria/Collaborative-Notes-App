@@ -1,26 +1,65 @@
 // frontend/src/components/notes/NoteEditor.tsx
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNotes } from '../../contexts/NotesContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { useSocket } from '../../hooks';
 import { useAutoSave, useDebounce } from '../../hooks';
 
+
+type TimeoutId = ReturnType<typeof setTimeout>;
+
 const NoteEditor: React.FC = () => {
   const { state, updateNote, selectNote } = useNotes();
+  const { user } = useAuth();
   const { socket, connected } = useSocket();
   const { selectedNote } = state;
 
-  const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
-  const [isEditing, setIsEditing] = useState(false);
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [title, setTitle] = useState<string>('');
+  const [content, setContent] = useState<string>('');
+  const [isEditing, setIsEditing] = useState<boolean>(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState<boolean>(false);
+
+  
+  const currentNoteId = useRef<string | null>(null);
+  const lastNoteVersion = useRef<string>('');
+  const isUpdatingFromSocket = useRef<boolean>(false);
+  const emitChangeRef = useRef<TimeoutId | null>(null);
+
+  const getUserPermission = useCallback((): 'none' | 'read' | 'write' => {
+    if (!selectedNote || !user) return 'none';
+    
+    // Check if user is the owner
+    if (selectedNote.owner._id === user._id) {
+      return 'write';
+    }
+    
+    // Check if user is a collaborator
+    const collaborator = selectedNote.collaborators.find(
+      collab => collab.user._id === user._id
+    );
+    
+    return collaborator?.permission || 'none';
+  }, [selectedNote?.owner._id, selectedNote?.collaborators, user?._id]);
 
   // Debounced values for auto-save
   const debouncedTitle = useDebounce(title, 1000);
   const debouncedContent = useDebounce(content, 1000);
 
-  // Auto-save function
-  const autoSave = useCallback(async (data: { title: string; content: string }) => {
+
+  const autoSave = useCallback(async (data: { title: string; content: string }): Promise<void> => {
     if (!selectedNote || (!data.title.trim() && !data.content.trim())) return;
+    
+    // Don't auto-save if user doesn't have write permission
+    if (getUserPermission() !== 'write') {
+      console.log('Auto-save skipped: User does not have write permission');
+      return;
+    }
+
+    // Don't auto-save if we're updating from socket
+    if (isUpdatingFromSocket.current) {
+      console.log('Auto-save skipped: Updating from socket');
+      return;
+    }
     
     try {
       await updateNote(selectedNote._id, {
@@ -28,10 +67,12 @@ const NoteEditor: React.FC = () => {
         content: data.content
       });
       setHasUnsavedChanges(false);
+      lastNoteVersion.current = data.title + '|' + data.content;
     } catch (error) {
       console.error('Auto-save failed:', error);
+      setHasUnsavedChanges(true);
     }
-  }, [selectedNote, updateNote]);
+  }, [selectedNote?._id, updateNote, getUserPermission]);
 
   // Use auto-save hook
   const { isSaving, lastSaved } = useAutoSave(
@@ -39,44 +80,110 @@ const NoteEditor: React.FC = () => {
     autoSave,
     2000
   );
-
-  // Load selected note data
   useEffect(() => {
-    if (selectedNote) {
-      setTitle(selectedNote.title);
-      setContent(selectedNote.content);
-      setHasUnsavedChanges(false);
-      setIsEditing(true);
-      
-      // Join note room for real-time collaboration
-      if (socket && connected) {
-        socket.emit('joinNote', selectedNote._id);
-      }
-    } else {
+    if (!selectedNote) {
       setTitle('');
       setContent('');
       setIsEditing(false);
       setHasUnsavedChanges(false);
+      currentNoteId.current = null;
+      lastNoteVersion.current = '';
+      return;
     }
 
-    // Cleanup: leave note room when switching notes
+    // Only update if this is a different note or the note data has actually changed
+    const newVersion = selectedNote.title + '|' + selectedNote.content;
+    const isDifferentNote = currentNoteId.current !== selectedNote._id;
+    const hasContentChanged = lastNoteVersion.current !== newVersion && !isUpdatingFromSocket.current;
+
+    if (isDifferentNote || hasContentChanged) {
+      console.log('Loading note data:', {
+        isDifferentNote,
+        hasContentChanged,
+        noteId: selectedNote._id,
+        title: selectedNote.title
+      });
+
+      setTitle(selectedNote.title);
+      setContent(selectedNote.content);
+      setHasUnsavedChanges(false);
+      setIsEditing(true);
+      lastNoteVersion.current = newVersion;
+      
+      if (isDifferentNote) {
+        currentNoteId.current = selectedNote._id;
+      }
+    }
+  }, [selectedNote?._id, selectedNote?.title, selectedNote?.content, selectedNote?.updatedAt]);
+
+  
+  useEffect(() => {
+    if (!socket || !connected || !selectedNote) {
+      return;
+    }
+
+    const noteId = selectedNote._id;
+
+    // Only join if we're not already in this note room
+    if (currentNoteId.current !== noteId) {
+      console.log('Joining note room:', noteId);
+      
+      // Leave previous room if exists
+      if (currentNoteId.current) {
+        socket.emit('leaveNote', currentNoteId.current);
+        console.log('Left previous note room:', currentNoteId.current);
+      }
+      
+      // Join new room
+      socket.emit('joinNote', noteId);
+      currentNoteId.current = noteId;
+    }
+
+    // Cleanup: leave room when note changes or component unmounts
     return () => {
-      if (socket && connected && selectedNote) {
-        socket.emit('leaveNote', selectedNote._id);
+      if (noteId && socket.connected) {
+        socket.emit('leaveNote', noteId);
+        console.log('Left note room on cleanup:', noteId);
       }
     };
-  }, [selectedNote, socket, connected]);
+  }, [socket, connected, selectedNote?._id]);
 
-  // Handle real-time updates from socket
+  
   useEffect(() => {
     if (!socket || !selectedNote) return;
 
-    const handleNoteUpdate = (data: any) => {
-      if (data.noteId === selectedNote._id) {
-        // Update from another user - don't trigger auto-save
-        setTitle(data.title || '');
-        setContent(data.content || '');
+    const handleNoteUpdate = (data: {
+      noteId: string;
+      title?: string;
+      content?: string;
+      updatedBy?: string;
+      timestamp?: string;
+    }) => {
+      if (data.noteId !== selectedNote._id) return;
+      
+      // Don't update if the change came from this user
+      if (data.updatedBy === user?._id) {
+        console.log('Ignoring update from self');
+        return;
       }
+
+      console.log('Received real-time update:', data);
+      
+      // Prevent auto-save during socket update
+      isUpdatingFromSocket.current = true;
+      
+      // Update local state
+      setTitle(data.title || '');
+      setContent(data.content || '');
+      setHasUnsavedChanges(false);
+      
+      // Update version tracking
+      lastNoteVersion.current = (data.title || '') + '|' + (data.content || '');
+      
+      // Re-enable auto-save after a short delay
+      setTimeout(() => {
+        isUpdatingFromSocket.current = false;
+      }, 100);
     };
 
     socket.on('noteContentUpdated', handleNoteUpdate);
@@ -84,46 +191,67 @@ const NoteEditor: React.FC = () => {
     return () => {
       socket.off('noteContentUpdated', handleNoteUpdate);
     };
-  }, [socket, selectedNote]);
+  }, [socket, selectedNote?._id, user?._id]);
 
-  // Emit real-time changes to other users
-  const emitChange = useCallback((newTitle: string, newContent: string) => {
-    if (socket && connected && selectedNote) {
+  // ✅ FIXED: Type-safe emit changes with debouncing
+  const emitChange = useCallback((newTitle: string, newContent: string): void => {
+    if (!socket || !connected || !selectedNote || isUpdatingFromSocket.current) return;
+
+    // Clear existing timeout
+    if (emitChangeRef.current) {
+      clearTimeout(emitChangeRef.current);
+      emitChangeRef.current = null;
+    }
+
+    // Set new timeout
+    emitChangeRef.current = setTimeout(() => {
       socket.emit('noteContentChange', {
         noteId: selectedNote._id,
         title: newTitle,
         content: newContent
       });
-    }
-  }, [socket, connected, selectedNote]);
+      emitChangeRef.current = null;
+    }, 300);
+  }, [socket, connected, selectedNote?._id]);
 
-  // Handle title change
-  const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  
+  const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>): void => {
+    if (isUpdatingFromSocket.current) return;
+    
     const newTitle = e.target.value;
     setTitle(newTitle);
     setHasUnsavedChanges(true);
     emitChange(newTitle, content);
   };
 
-  // Handle content change
-  const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+  // ✅ FIXED: Handle content change with proper typing
+  const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>): void => {
+    if (isUpdatingFromSocket.current) return;
+    
     const newContent = e.target.value;
     setContent(newContent);
     setHasUnsavedChanges(true);
     emitChange(title, newContent);
   };
 
-  // Handle close editor
-  const handleClose = () => {
+
+  const handleClose = (): void => {
+    if (emitChangeRef.current) {
+      clearTimeout(emitChangeRef.current);
+      emitChangeRef.current = null;
+    }
     selectNote(null);
   };
 
-  // Get user permission for current note
-  const getUserPermission = () => {
-    if (!selectedNote) return 'none';
-    // Add permission logic here when we implement collaborators
-    return 'write'; // For now, assume write permission
-  };
+
+  useEffect(() => {
+    return () => {
+      if (emitChangeRef.current) {
+        clearTimeout(emitChangeRef.current);
+        emitChangeRef.current = null;
+      }
+    };
+  }, []);
 
   const permission = getUserPermission();
   const canEdit = permission === 'write';
@@ -184,6 +312,15 @@ const NoteEditor: React.FC = () => {
                 {connected ? 'Live' : 'Offline'}
               </span>
             </div>
+
+            {/* Permission indicator */}
+            <span className={`text-xs px-2 py-1 rounded-full ${
+              permission === 'write' 
+                ? 'bg-green-100 text-green-800' 
+                : 'bg-yellow-100 text-yellow-800'
+            }`}>
+              {permission === 'write' ? 'Editor' : 'Read-only'}
+            </span>
           </div>
         </div>
 
@@ -193,6 +330,11 @@ const NoteEditor: React.FC = () => {
           <span>
             {new Date(selectedNote.updatedAt).toLocaleString()}
           </span>
+          {selectedNote.lastEditedBy && (
+            <span className="ml-2">
+              by {selectedNote.lastEditedBy.username}
+            </span>
+          )}
         </div>
       </div>
 
@@ -206,7 +348,9 @@ const NoteEditor: React.FC = () => {
             onChange={handleTitleChange}
             placeholder="Note title..."
             disabled={!canEdit}
-            className="w-full text-2xl font-bold text-gray-900 placeholder-gray-400 border-0 focus:ring-0 focus:outline-none bg-transparent resize-none"
+            className={`w-full text-2xl font-bold text-gray-900 placeholder-gray-400 border-0 focus:ring-0 focus:outline-none bg-transparent resize-none ${
+              !canEdit ? 'cursor-not-allowed opacity-60' : ''
+            }`}
           />
         </div>
 
@@ -217,16 +361,26 @@ const NoteEditor: React.FC = () => {
             onChange={handleContentChange}
             placeholder="Start writing your note..."
             disabled={!canEdit}
-            className="w-full h-full text-gray-900 placeholder-gray-400 border-0 focus:ring-0 focus:outline-none bg-transparent resize-none text-base leading-relaxed"
+            className={`w-full h-full text-gray-900 placeholder-gray-400 border-0 focus:ring-0 focus:outline-none bg-transparent resize-none text-base leading-relaxed ${
+              !canEdit ? 'cursor-not-allowed opacity-60' : ''
+            }`}
           />
         </div>
       </div>
 
-      {/* Read-only indicator */}
-      {!canEdit && (
+      {/* Status indicators */}
+      {!canEdit && permission !== 'none' && (
         <div className="p-3 bg-yellow-50 border-t border-yellow-200">
           <p className="text-sm text-yellow-800">
             You have read-only access to this note
+          </p>
+        </div>
+      )}
+
+      {permission === 'none' && (
+        <div className="p-3 bg-red-50 border-t border-red-200">
+          <p className="text-sm text-red-800">
+            You do not have access to this note
           </p>
         </div>
       )}

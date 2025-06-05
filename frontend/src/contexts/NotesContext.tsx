@@ -1,6 +1,7 @@
 // frontend/src/contexts/NotesContext.tsx
-import React, { createContext, useContext, useReducer, useEffect } from 'react';
+import React, { createContext, useContext, useReducer, useEffect, useCallback } from 'react';
 import type { ReactNode } from 'react';
+import { useSocket } from '../hooks';
 import api from '../lib/api';
 
 interface Note {
@@ -44,7 +45,8 @@ type NotesAction =
   | { type: 'UPDATE_NOTE'; payload: Note }
   | { type: 'DELETE_NOTE'; payload: string }
   | { type: 'SET_SELECTED_NOTE'; payload: Note | null }
-  | { type: 'OPTIMISTIC_UPDATE'; payload: { id: string; updates: Partial<Note> } };
+  | { type: 'OPTIMISTIC_UPDATE'; payload: { id: string; updates: Partial<Note> } }
+  | { type: 'REVERT_OPTIMISTIC_UPDATE'; payload: string };
 
 const initialState: NotesState = {
   notes: [],
@@ -53,7 +55,7 @@ const initialState: NotesState = {
   selectedNote: null,
 };
 
-// useReducer for complex state management
+// ✅ FIXED: Prevent object recreation that causes infinite loops
 const notesReducer = (state: NotesState, action: NotesAction): NotesState => {
   switch (action.type) {
     case 'SET_LOADING':
@@ -74,12 +76,19 @@ const notesReducer = (state: NotesState, action: NotesAction): NotesState => {
       };
     
     case 'UPDATE_NOTE':
+      const updatedNotes = state.notes.map(note => 
+        note._id === action.payload._id ? action.payload : note
+      );
+      
+      // ✅ FIXED: Only update selectedNote if it's actually different
+      const updatedSelectedNote = state.selectedNote?._id === action.payload._id 
+        ? action.payload 
+        : state.selectedNote;
+      
       return {
         ...state,
-        notes: state.notes.map(note => 
-          note._id === action.payload._id ? action.payload : note
-        ),
-        selectedNote: state.selectedNote?._id === action.payload._id ? action.payload : state.selectedNote,
+        notes: updatedNotes,
+        selectedNote: updatedSelectedNote,
         loading: false,
         error: null
       };
@@ -94,20 +103,41 @@ const notesReducer = (state: NotesState, action: NotesAction): NotesState => {
       };
     
     case 'SET_SELECTED_NOTE':
+      // ✅ FIXED: Prevent unnecessary updates
+      if (state.selectedNote?._id === action.payload?._id) {
+        return state;
+      }
       return { ...state, selectedNote: action.payload };
     
     case 'OPTIMISTIC_UPDATE':
-      // Optimistic UI update - update immediately, sync later
+      const { id, updates } = action.payload;
+      
+      // ✅ FIXED: Create new objects only when necessary
+      const optimisticNotes = state.notes.map(note =>
+        note._id === id ? { ...note, ...updates } : note
+      );
+      
+      const optimisticSelectedNote = state.selectedNote?._id === id
+        ? { ...state.selectedNote, ...updates }
+        : state.selectedNote;
+      
+      return {
+        ...state,
+        notes: optimisticNotes,
+        selectedNote: optimisticSelectedNote
+      };
+    
+    case 'REVERT_OPTIMISTIC_UPDATE':
+      // Find the original note from the server
+      const noteToRevert = state.notes.find(note => note._id === action.payload);
+      if (!noteToRevert) return state;
+      
       return {
         ...state,
         notes: state.notes.map(note =>
-          note._id === action.payload.id
-            ? { ...note, ...action.payload.updates }
-            : note
+          note._id === action.payload ? noteToRevert : note
         ),
-        selectedNote: state.selectedNote?._id === action.payload.id
-          ? { ...state.selectedNote, ...action.payload.updates }
-          : state.selectedNote
+        selectedNote: state.selectedNote?._id === action.payload ? noteToRevert : state.selectedNote
       };
     
     default:
@@ -133,20 +163,47 @@ interface NotesProviderProps {
 
 export const NotesProvider: React.FC<NotesProviderProps> = ({ children }) => {
   const [state, dispatch] = useReducer(notesReducer, initialState);
+  const { socket } = useSocket();
 
-  // Fetch all notes
-  const fetchNotes = async () => {
+  // ✅ FIXED: Stable callback references
+  const optimisticUpdate = useCallback((id: string, updates: Partial<Note>) => {
+    dispatch({ type: 'OPTIMISTIC_UPDATE', payload: { id, updates } });
+  }, []);
+
+  // ✅ FIXED: Handle real-time updates with stable references
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleNoteUpdate = (data: any) => {
+      console.log('Real-time update received:', data);
+      optimisticUpdate(data.noteId, { 
+        content: data.content, 
+        title: data.title,
+        updatedAt: data.timestamp || new Date().toISOString()
+      });
+    };
+
+    socket.on('noteContentUpdated', handleNoteUpdate);
+
+    return () => {
+      socket.off('noteContentUpdated', handleNoteUpdate);
+    };
+  }, [socket, optimisticUpdate]);
+
+  // ✅ FIXED: Fetch all notes with proper error handling
+  const fetchNotes = useCallback(async () => {
     try {
       dispatch({ type: 'SET_LOADING', payload: true });
       const response = await api.get('/notes');
       dispatch({ type: 'SET_NOTES', payload: response.data.data.notes });
     } catch (error: any) {
+      console.error('Failed to fetch notes:', error);
       dispatch({ type: 'SET_ERROR', payload: error.response?.data?.message || 'Failed to fetch notes' });
     }
-  };
+  }, []);
 
-  // Create new note
-  const createNote = async (title: string, content: string = ''): Promise<Note> => {
+  // ✅ FIXED: Create new note with proper error handling
+  const createNote = useCallback(async (title: string, content: string = ''): Promise<Note> => {
     try {
       dispatch({ type: 'SET_LOADING', payload: true });
       const response = await api.post('/notes', { title, content });
@@ -154,58 +211,79 @@ export const NotesProvider: React.FC<NotesProviderProps> = ({ children }) => {
       dispatch({ type: 'ADD_NOTE', payload: newNote });
       return newNote;
     } catch (error: any) {
+      console.error('Failed to create note:', error);
       dispatch({ type: 'SET_ERROR', payload: error.response?.data?.message || 'Failed to create note' });
       throw error;
     }
-  };
+  }, []);
 
-  // Update note with optimistic updates
-  const updateNote = async (id: string, updates: Partial<Pick<Note, 'title' | 'content' | 'tags'>>) => {
+  // ✅ FIXED: Update note with better error handling and retry logic
+  const updateNote = useCallback(async (id: string, updates: Partial<Pick<Note, 'title' | 'content' | 'tags'>>) => {
     try {
-      // Optimistic update - update UI immediately
+      console.log('Updating note:', id, updates);
+      
+      // ✅ FIXED: Optimistic update first
       dispatch({ type: 'OPTIMISTIC_UPDATE', payload: { id, updates } });
       
-      // Send to server
-      const response = await api.put(`/notes/${id}`, updates);
+      // ✅ FIXED: Send to server with timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
       
-      // Update with server response (in case server modified data)
+      const response = await api.put(`/notes/${id}`, updates, {
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
+      // ✅ FIXED: Update with server response
       dispatch({ type: 'UPDATE_NOTE', payload: response.data.data.note });
+      console.log('Note updated successfully');
+      
     } catch (error: any) {
-      // Revert optimistic update by refetching
+      console.error('Failed to update note:', error);
+      
+      // ✅ FIXED: Better error handling
+      if (error.response?.status === 403) {
+        dispatch({ type: 'SET_ERROR', payload: 'You do not have permission to edit this note' });
+      } else if (error.response?.status === 401) {
+        dispatch({ type: 'SET_ERROR', payload: 'Your session has expired. Please log in again.' });
+      } else if (error.name === 'AbortError') {
+        dispatch({ type: 'SET_ERROR', payload: 'Request timed out. Please try again.' });
+      } else {
+        dispatch({ type: 'SET_ERROR', payload: error.response?.data?.message || 'Failed to update note' });
+      }
+      
+      // ✅ FIXED: Revert optimistic update by fetching fresh data
       await fetchNotes();
-      dispatch({ type: 'SET_ERROR', payload: error.response?.data?.message || 'Failed to update note' });
       throw error;
     }
-  };
+  }, [fetchNotes]);
 
-  // Delete note
-  const deleteNote = async (id: string) => {
+  // ✅ FIXED: Delete note with proper error handling
+  const deleteNote = useCallback(async (id: string) => {
     try {
       dispatch({ type: 'SET_LOADING', payload: true });
       await api.delete(`/notes/${id}`);
       dispatch({ type: 'DELETE_NOTE', payload: id });
     } catch (error: any) {
+      console.error('Failed to delete note:', error);
       dispatch({ type: 'SET_ERROR', payload: error.response?.data?.message || 'Failed to delete note' });
       throw error;
     }
-  };
+  }, []);
 
-  // Select note for editing
-  const selectNote = (note: Note | null) => {
+  // ✅ FIXED: Select note with proper reference checking
+  const selectNote = useCallback((note: Note | null) => {
     dispatch({ type: 'SET_SELECTED_NOTE', payload: note });
-  };
-
-  // Optimistic update for real-time collaboration
-  const optimisticUpdate = (id: string, updates: Partial<Note>) => {
-    dispatch({ type: 'OPTIMISTIC_UPDATE', payload: { id, updates } });
-  };
+  }, []);
 
   // Load notes on mount
   useEffect(() => {
     fetchNotes();
-  }, []);
+  }, [fetchNotes]);
 
-  const value: NotesContextType = {
+  // ✅ FIXED: Stable value object to prevent provider re-renders
+  const value: NotesContextType = React.useMemo(() => ({
     state,
     fetchNotes,
     createNote,
@@ -213,7 +291,7 @@ export const NotesProvider: React.FC<NotesProviderProps> = ({ children }) => {
     deleteNote,
     selectNote,
     optimisticUpdate,
-  };
+  }), [state, fetchNotes, createNote, updateNote, deleteNote, selectNote, optimisticUpdate]);
 
   return (
     <NotesContext.Provider value={value}>

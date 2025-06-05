@@ -14,7 +14,7 @@ export const getNotes = async (req, res) => {
     const notes = await Note.find(query)
       .populate("owner", "username email")
       .populate("collaborators.user", "username email")
-      .populate("lasEditedBy", "username")
+      .populate("lastEditedBy", "username")
       .sort({ updated: -1 });
 
     res.status(200).json({
@@ -40,7 +40,7 @@ export const getNote = async (req, res) => {
     const note = await Note.findById(id)
       .populate("owner", "username email")
       .populate("collaborators.user", "username email")
-      .populate("lasEditedBy", "username");
+      .populate("lastEditedBy", "username");
 
     if (!note) {
       return res.status(404).json({

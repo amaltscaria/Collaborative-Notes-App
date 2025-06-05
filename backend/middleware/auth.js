@@ -1,20 +1,18 @@
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
- const  auth = async (req, res, next) => {
+const auth = async (req, res, next) => {
   try {
     let token;
-
     // Check for token in authorization header - set manually
     if (
       req.headers.authorization &&
       req.headers.authorization.startsWith("Bearer")
     ) {
-      token = req.headers.authorization.split("")[1];
+      token = req.headers.authorization.split(" ")[1];
       // Check for token in cookies (set automatically by browser)
-    } else if (req.cookies & req.cookies.token) {
+    } else if (req.cookies && req.cookies.token) {
       token = req.cookies.token;
     }
-
     if (!token) {
       res.status(401).json({
         success: false,
