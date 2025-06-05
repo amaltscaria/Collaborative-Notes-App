@@ -5,7 +5,7 @@ import axios from "axios";
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || "http://localhost:3000/api",
   headers: {
-    "Content-Type": "applicaton/json",
+    "Content-Type": "application/json",
   },
 });
 
@@ -29,11 +29,12 @@ api.interceptors.response.use(
     if (error.response?.status === 401) {
       // Token expired or invalid
       localStorage.removeItem("token");
-      window.location.href = "/login";
+      setTimeout(() => {
+        window.location.href = "/login";
+      },2000);
     }
     return Promise.reject(error);
   }
 );
-
 
 export default api;
